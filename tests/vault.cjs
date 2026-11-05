@@ -1,0 +1,21 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),{webcrypto}=require('node:crypto');
+const html=fs.readFileSync('app/tracker.html','utf8').replaceAll('__NCTT_SIGNED_IN__','false');
+const inline=[...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map(match=>match[1]).find(s=>s.includes('const KEY='));
+const nodes=new Map();const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:'',innerHTML:''});return nodes.get(id)};
+const stored=new Map();
+const ctx={crypto:webcrypto,TextEncoder,TextDecoder,Uint8Array,btoa,atob,URL,Blob,setTimeout(){return 1},clearTimeout(){},document:{addEventListener(){},getElementById:node},localStorage:{getItem:k=>stored.get(k)||null,setItem:(k,v)=>stored.set(k,v)}};
+vm.createContext(ctx);vm.runInContext(inline+`;this.vaultTest={getKey:()=>vaultKey,getEntries:()=>JSON.parse(JSON.stringify(vaultEntries)),setEntries:entries=>{vaultEntries=entries},getStored:()=>JSON.parse(localStorage.getItem(KEY))};`,ctx);
+(async()=>{
+ const master='development-only-master-password';node('master').value=master;node('confirmmaster').value=master;
+ await ctx.unlock();assert.ok(ctx.vaultTest.getKey());
+ const entry={name:'QA account',user:'test@example.invalid',password:'qa-secret-not-a-real-credential',notes:'Isolated test fixture'};
+ ctx.vaultTest.setEntries([entry]);await ctx.persistVault();
+ const first=ctx.vaultTest.getStored(),serialized=JSON.stringify(first);
+ assert.ok(first.vault.data&&first.vault.iv&&first.vault.salt);assert.ok(!serialized.includes(master));assert.ok(!serialized.includes(entry.password));assert.ok(!serialized.includes(entry.user));
+ await ctx.persistVault();const second=ctx.vaultTest.getStored();assert.notEqual(first.vault.iv,second.vault.iv,'each save must use a new IV');assert.notEqual(first.vault.data,second.vault.data);
+ ctx.lock();assert.equal(ctx.vaultTest.getKey(),null);assert.equal(ctx.vaultTest.getEntries().length,0);
+ node('master').value='incorrect-development-master';await ctx.unlock();assert.equal(ctx.vaultTest.getKey(),null);assert.equal(ctx.vaultTest.getStored().vault.data,second.vault.data);assert.match(node('error').textContent,/Unable to unlock/);
+ node('master').value=master;await ctx.unlock();assert.deepEqual(JSON.parse(JSON.stringify(ctx.vaultTest.getEntries())),[entry]);
+ ctx.lock();assert.equal(ctx.vaultTest.getEntries().length,0);
+ console.log('PASS: vault round-trip, encrypted-only persistence, fresh IVs, wrong-password rejection, and locking clears decrypted data.');
+})().catch(error=>{console.error(error);process.exitCode=1});

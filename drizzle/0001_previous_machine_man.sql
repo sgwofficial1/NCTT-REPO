@@ -1,0 +1,1 @@
+ALTER TABLE `documents` ADD `linked_task` text;
